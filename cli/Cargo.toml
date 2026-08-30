@@ -1,0 +1,12 @@
+[package]
+name = "cli"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+slh-dsa = "0.1.0"
+signature = "=2.3.0-pre.4"
+rand_core = { version = "0.6.4", features = ["getrandom"] }
+
+[dev-dependencies]
+tempfile = "3"
