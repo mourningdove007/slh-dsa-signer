@@ -12,6 +12,7 @@ use core::fmt::Write as _;
 use esp_hal::clock::CpuClock;
 use esp_hal::gpio::{Level, Output, OutputConfig};
 use esp_hal::main;
+use esp_hal::time::{Duration, Instant};
 use esp_hal::usb_serial_jtag::UsbSerialJtag;
 
 #[panic_handler]
@@ -71,7 +72,23 @@ fn main() -> ! {
             b'g' => green.toggle(),
             b'b' => blue.toggle(),
             b'o' => orange.toggle(),
-            b'p' => pink
+            b't' => {
+                red.set_high();
+                orange.set_high();
+                green.set_high();
+
+                let flash_deadline = Instant::now() + Duration::from_secs(5);
+                let blink_period = Duration::from_millis(200);
+                let mut next_toggle = Instant::now() + blink_period;
+                while Instant::now() < flash_deadline {
+                    if Instant::now() >= next_toggle {
+                        blue.toggle();
+                        next_toggle += blink_period;
+                    }
+                }
+                blue.set_high();
+                green.set_low();
+            }
             b'x' => {
                 red.set_high();
                 green.set_high();
