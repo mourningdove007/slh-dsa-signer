@@ -14,11 +14,18 @@ use esp_hal::gpio::{Level, Output, OutputConfig};
 use esp_hal::main;
 use esp_hal::time::{Duration, Instant};
 use esp_hal::usb_serial_jtag::UsbSerialJtag;
+use slh_dsa::signature::Signer;
+use slh_dsa::{Sha2_128f, SigningKey};
 
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
     loop {}
 }
+
+
+static SECRET_KEY_BYTES: &[u8] = include_bytes!("../../keys/sec.key");
+static PUBLIC_KEY_HEX: &str = include_str!("../../keys/pub.key");
+static MESSAGE: &[u8] = b"hello from the nano-signer bring-up test";
 
 // This creates a default app-descriptor required by the esp-idf bootloader.
 // For more information see: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/app_image_format.html#application-description>
@@ -88,6 +95,47 @@ fn main() -> ! {
                 }
                 blue.set_high();
                 green.set_low();
+            }
+            b's' => {
+                 blue.set_low();
+
+                let signing_key = SigningKey::<Sha2_128f>::try_from(SECRET_KEY_BYTES)
+                    .expect("embedded secret key must be well-formed");
+
+                match signing_key.try_sign(MESSAGE) {
+                    Ok(signature) => {
+                        blue.set_high();
+
+                        let sig_bytes = signature.to_bytes();
+                        let _ = write!(
+                            usb_serial,
+                            "signed {} bytes with public key {}\r\nsignature ({} bytes): ",
+                            MESSAGE.len(),
+                            PUBLIC_KEY_HEX.trim(),
+                            sig_bytes.len(),
+                        );
+                        for b in sig_bytes.iter().take(8) {
+                            let _ = write!(usb_serial, "{b:02x}");
+                        }
+                        let _ = write!(usb_serial, "...\r\n");
+                        let _ = usb_serial.flush_tx();
+
+                        green.set_low();
+                        let hold_until = Instant::now() + Duration::from_millis(500);
+                        while Instant::now() < hold_until {}
+                        green.set_high();
+                    }
+                    Err(_) => {
+                        blue.set_high();
+                        let _ = write!(usb_serial, "signing failed\r\n");
+                        let _ = usb_serial.flush_tx();
+
+                        red.set_low();
+                        let hold_until = Instant::now() + Duration::from_millis(500);
+                        while Instant::now() < hold_until {}
+                        red.set_high();
+                    }
+                }
             }
             b'x' => {
                 red.set_high();
