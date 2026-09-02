@@ -12,6 +12,7 @@ use core::fmt::Write as _;
 use esp_hal::clock::CpuClock;
 use esp_hal::gpio::{Level, Output, OutputConfig};
 use esp_hal::main;
+use esp_hal::rng::{Trng, TrngSource};
 use esp_hal::time::{Duration, Instant};
 use esp_hal::usb_serial_jtag::UsbSerialJtag;
 use slh_dsa::signature::Signer;
@@ -66,6 +67,11 @@ fn main() -> ! {
     let mut orange = Output::new(peripherals.GPIO48, Level::High, OutputConfig::default());
 
     let mut usb_serial = UsbSerialJtag::new(peripherals.USB_DEVICE);
+
+    // Backs the hardware TRNG used for key generation below. Must stay alive
+    // for as long as `Trng::try_new()` is called, hence bound here rather
+    // than inside the match arm that uses it.
+    let _trng_source = TrngSource::new(peripherals.RNG, peripherals.ADC1);
 
     loop {
         // read_byte() is non-blocking (returns Err(WouldBlock) when nothing is
@@ -136,6 +142,42 @@ fn main() -> ! {
                         red.set_high();
                     }
                 }
+            }
+            b'k' => {
+                // Key generation
+                red.set_low();
+                blue.set_low();
+
+                let Ok(mut trng) = Trng::try_new() else {
+                    red.set_high();
+                    blue.set_high();
+                    let _ = write!(usb_serial, "TRNG unavailable\r\n");
+                    let _ = usb_serial.flush_tx();
+                    continue;
+                };
+
+                let signing_key = SigningKey::<Sha2_128f>::new(&mut trng);
+                let sec_bytes = signing_key.to_bytes();
+                let pub_bytes = signing_key.as_ref().to_bytes();
+
+                red.set_high();
+                blue.set_high();
+
+                let _ = write!(usb_serial, "sec.key ({} bytes): ", sec_bytes.len());
+                for b in sec_bytes.iter() {
+                    let _ = write!(usb_serial, "{b:02x}");
+                }
+                let _ = write!(usb_serial, "\r\npub.key ({} bytes): ", pub_bytes.len());
+                for b in pub_bytes.iter() {
+                    let _ = write!(usb_serial, "{b:02x}");
+                }
+                let _ = write!(usb_serial, "\r\nnot written to storage yet\r\n");
+                let _ = usb_serial.flush_tx();
+
+                green.set_low();
+                let hold_until = Instant::now() + Duration::from_millis(500);
+                while Instant::now() < hold_until {}
+                green.set_high();
             }
             b'x' => {
                 red.set_high();
