@@ -4,9 +4,31 @@ use std::process::ExitCode;
 
 fn print_usage(program: &str) {
     eprintln!("Usage:");
-    eprintln!("  {program} keygen <secret-key-path>");
-    eprintln!("  {program} sign <secret-key-path> <message> <signature-path>");
-    eprintln!("  {program} verify <public-key-hex> <message> <signature-path>");
+    eprintln!("  {program} keygen <secret-key-path> [--param 128s|128f|192s|192f|256s|256f] [--pub-key <public-key-path>]");
+    eprintln!("  {program} sign <secret-key-path> <message> <signature-path> [--param 128s|128f|192s|192f|256s|256f]");
+    eprintln!("  {program} verify <public-key-path> <message> <signature-path> [--param 128s|128f|192s|192f|256s|256f]");
+    eprintln!("  {program} gen-corpus <output-path>");
+    eprintln!("  (--param defaults to 128s for keygen, 128f for sign/verify, matching this project's original desktop workflow)");
+}
+
+fn parse_flag_pairs(args: &mut env::Args) -> Result<Vec<(String, String)>, String> {
+    let mut pairs = Vec::new();
+    while let Some(flag) = args.next() {
+        let Some(value) = args.next() else {
+            return Err(format!("{flag} requires a value"));
+        };
+        pairs.push((flag, value));
+    }
+    Ok(pairs)
+}
+
+
+fn parse_param(name: &str) -> Result<cli::ParamSet, String> {
+    cli::ParamSet::parse(name).ok_or_else(|| {
+        format!(
+            "unknown parameter set '{name}' (expected one of: 128s, 128f, 192s, 192f, 256s, 256f)"
+        )
+    })
 }
 
 fn main() -> ExitCode {
@@ -25,9 +47,41 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             };
 
-            match cli::generate_keypair(&PathBuf::from(&key_path)) {
+            let flags = match parse_flag_pairs(&mut args) {
+                Ok(flags) => flags,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
+
+            let mut param_set = cli::ParamSet::DEFAULT;
+            let mut public_key_path: Option<PathBuf> = None;
+
+            for (flag, value) in flags {
+                match flag.as_str() {
+                    "--param" => match parse_param(&value) {
+                        Ok(parsed) => param_set = parsed,
+                        Err(e) => {
+                            eprintln!("error: {e}");
+                            return ExitCode::FAILURE;
+                        }
+                    },
+                    "--pub-key" => public_key_path = Some(PathBuf::from(value)),
+                    other => {
+                        eprintln!("error: unrecognized argument '{other}'");
+                        print_usage(&program);
+                        return ExitCode::FAILURE;
+                    }
+                }
+            }
+
+            match cli::generate_keypair(param_set, &PathBuf::from(&key_path), public_key_path.as_deref()) {
                 Ok(public_key) => {
                     println!("secret key written to {key_path}");
+                    if let Some(public_key_path) = &public_key_path {
+                        println!("public key written to {}", public_key_path.display());
+                    }
                     println!("public key (hex): {}", hex_encode(&public_key));
                     ExitCode::SUCCESS
                 }
@@ -45,7 +99,34 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             };
 
+            // Defaults to 128f
+            let mut param_set = cli::ParamSet::Sha2_128f;
+            let flags = match parse_flag_pairs(&mut args) {
+                Ok(flags) => flags,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            for (flag, value) in flags {
+                match flag.as_str() {
+                    "--param" => match parse_param(&value) {
+                        Ok(parsed) => param_set = parsed,
+                        Err(e) => {
+                            eprintln!("error: {e}");
+                            return ExitCode::FAILURE;
+                        }
+                    },
+                    other => {
+                        eprintln!("error: unrecognized argument '{other}'");
+                        print_usage(&program);
+                        return ExitCode::FAILURE;
+                    }
+                }
+            }
+
             match cli::sign_message(
+                param_set,
                 message.as_bytes(),
                 &PathBuf::from(&key_path),
                 &PathBuf::from(&signature_path),
@@ -62,22 +143,44 @@ fn main() -> ExitCode {
             }
         }
         "verify" => {
-            let (Some(public_key_hex), Some(message), Some(signature_path)) =
+            let (Some(public_key_path), Some(message), Some(signature_path)) =
                 (args.next(), args.next(), args.next())
             else {
                 print_usage(&program);
                 return ExitCode::FAILURE;
             };
 
-            let Some(public_key) = hex_decode(&public_key_hex) else {
-                eprintln!("error: public key must be valid hex");
-                return ExitCode::FAILURE;
+            // Same default rationale as `sign`: 128f, not ParamSet::DEFAULT.
+            let mut param_set = cli::ParamSet::Sha2_128f;
+            let flags = match parse_flag_pairs(&mut args) {
+                Ok(flags) => flags,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    return ExitCode::FAILURE;
+                }
             };
+            for (flag, value) in flags {
+                match flag.as_str() {
+                    "--param" => match parse_param(&value) {
+                        Ok(parsed) => param_set = parsed,
+                        Err(e) => {
+                            eprintln!("error: {e}");
+                            return ExitCode::FAILURE;
+                        }
+                    },
+                    other => {
+                        eprintln!("error: unrecognized argument '{other}'");
+                        print_usage(&program);
+                        return ExitCode::FAILURE;
+                    }
+                }
+            }
 
             match cli::verify_message(
+                param_set,
                 message.as_bytes(),
                 &PathBuf::from(&signature_path),
-                &public_key,
+                &PathBuf::from(&public_key_path),
             ) {
                 Ok(true) => {
                     println!("valid");
@@ -93,6 +196,25 @@ fn main() -> ExitCode {
                 }
             }
         }
+        "gen-corpus" => {
+            let Some(output_path) = args.next() else {
+                print_usage(&program);
+                return ExitCode::FAILURE;
+            };
+
+            match cli::generate_corpus(&PathBuf::from(&output_path)) {
+                Ok((record_count, byte_count)) => {
+                    println!(
+                        "wrote {record_count} messages ({byte_count} bytes) to {output_path}"
+                    );
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("error: failed to generate corpus: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
         _ => {
             print_usage(&program);
             ExitCode::FAILURE
@@ -102,15 +224,4 @@ fn main() -> ExitCode {
 
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-fn hex_decode(hex: &str) -> Option<Vec<u8>> {
-    if hex.len() % 2 != 0 {
-        return None;
-    }
-
-    (0..hex.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).ok())
-        .collect()
 }

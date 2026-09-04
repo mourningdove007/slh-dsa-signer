@@ -16,7 +16,7 @@ use esp_hal::rng::{Trng, TrngSource};
 use esp_hal::time::{Duration, Instant};
 use esp_hal::usb_serial_jtag::UsbSerialJtag;
 use slh_dsa::signature::Signer;
-use slh_dsa::{Sha2_128f, SigningKey};
+use slh_dsa::SigningKey;
 
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
@@ -24,9 +24,70 @@ fn panic(_: &core::panic::PanicInfo) -> ! {
 }
 
 
+#[cfg(feature = "param-128s")]
+type SelectedParams = slh_dsa::Sha2_128s;
+#[cfg(feature = "param-128f")]
+type SelectedParams = slh_dsa::Sha2_128f;
+#[cfg(feature = "param-192s")]
+type SelectedParams = slh_dsa::Sha2_192s;
+#[cfg(feature = "param-192f")]
+type SelectedParams = slh_dsa::Sha2_192f;
+#[cfg(feature = "param-256s")]
+type SelectedParams = slh_dsa::Sha2_256s;
+#[cfg(feature = "param-256f")]
+type SelectedParams = slh_dsa::Sha2_256f;
+
+#[cfg(not(any(
+    feature = "param-128s",
+    feature = "param-128f",
+    feature = "param-192s",
+    feature = "param-192f",
+    feature = "param-256s",
+    feature = "param-256f",
+)))]
+compile_error!("enable exactly one param-* feature, e.g. --features param-192f");
+
+#[cfg(feature = "param-128s")]
+const PARAM_SET_NAME: &str = "128s";
+#[cfg(feature = "param-128f")]
+const PARAM_SET_NAME: &str = "128f";
+#[cfg(feature = "param-192s")]
+const PARAM_SET_NAME: &str = "192s";
+#[cfg(feature = "param-192f")]
+const PARAM_SET_NAME: &str = "192f";
+#[cfg(feature = "param-256s")]
+const PARAM_SET_NAME: &str = "256s";
+#[cfg(feature = "param-256f")]
+const PARAM_SET_NAME: &str = "256f";
+
+const CORPUS_MESSAGE_COUNT: usize = 100;
+
 static SECRET_KEY_BYTES: &[u8] = include_bytes!("../../keys/sec.key");
-static PUBLIC_KEY_HEX: &str = include_str!("../../keys/pub.key");
+static PUBLIC_KEY_BYTES: &[u8] = include_bytes!("../../keys/pub.key");
+static MESSAGE_CORPUS: &[u8] = include_bytes!("../../messages/corpus.bin");
 static MESSAGE: &[u8] = b"hello from the nano-signer bring-up test";
+
+struct CorpusMessages<'a> {
+    remaining: &'a [u8],
+}
+
+impl<'a> CorpusMessages<'a> {
+    fn new(data: &'a [u8]) -> Self {
+        Self { remaining: data }
+    }
+}
+
+impl<'a> Iterator for CorpusMessages<'a> {
+    type Item = &'a [u8];
+
+    fn next(&mut self) -> Option<&'a [u8]> {
+        let (len_bytes, rest) = self.remaining.split_at_checked(4)?;
+        let len = u32::from_le_bytes(len_bytes.try_into().unwrap()) as usize;
+        let (message, rest) = rest.split_at_checked(len)?;
+        self.remaining = rest;
+        Some(message)
+    }
+}
 
 // This creates a default app-descriptor required by the esp-idf bootloader.
 // For more information see: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/app_image_format.html#application-description>
@@ -86,26 +147,78 @@ fn main() -> ! {
             b'b' => blue.toggle(),
             b'o' => orange.toggle(),
             b't' => {
-                red.set_high();
-                orange.set_high();
-                green.set_high();
+                
+                blue.set_low();
 
-                let flash_deadline = Instant::now() + Duration::from_secs(5);
-                let blink_period = Duration::from_millis(200);
-                let mut next_toggle = Instant::now() + blink_period;
-                while Instant::now() < flash_deadline {
-                    if Instant::now() >= next_toggle {
-                        blue.toggle();
-                        next_toggle += blink_period;
-                    }
+                let signing_key = SigningKey::<SelectedParams>::try_from(SECRET_KEY_BYTES)
+                    .expect("embedded secret key must be well-formed");
+
+                let _ = write!(
+                    usb_serial,
+                    "benchmarking {PARAM_SET_NAME} over {CORPUS_MESSAGE_COUNT} messages\r\n"
+                );
+                let _ = usb_serial.flush_tx();
+
+                let mut timings_ms = [0u64; CORPUS_MESSAGE_COUNT];
+                let mut count = 0;
+
+                for message in CorpusMessages::new(MESSAGE_CORPUS).take(CORPUS_MESSAGE_COUNT) {
+                    let start = Instant::now();
+                    let Ok(_signature) = signing_key.try_sign(message) else {
+                        blue.set_high();
+                        let _ = write!(usb_serial, "signing failed on message {}\r\n", count + 1);
+                        let _ = usb_serial.flush_tx();
+
+                        red.set_low();
+                        let hold_until = Instant::now() + Duration::from_millis(500);
+                        while Instant::now() < hold_until {}
+                        red.set_high();
+                        break;
+                    };
+                    let elapsed_ms = start.elapsed().as_millis();
+                    timings_ms[count] = elapsed_ms;
+
+                    let _ = write!(
+                        usb_serial,
+                        "[{:>3}/{CORPUS_MESSAGE_COUNT}] {} bytes -> {elapsed_ms} ms\r\n",
+                        count + 1,
+                        message.len(),
+                    );
+                    let _ = usb_serial.flush_tx();
+                    count += 1;
                 }
-                blue.set_high();
-                green.set_low();
+
+                if count == CORPUS_MESSAGE_COUNT {
+                    blue.set_high();
+
+                    let timings = &mut timings_ms[..count];
+                    timings.sort_unstable();
+                    let min = timings[0];
+                    let max = timings[count - 1];
+                    let sum: u64 = timings.iter().sum();
+                    let average = sum / count as u64;
+                    let median = if count % 2 == 0 {
+                        (timings[count / 2 - 1] + timings[count / 2]) / 2
+                    } else {
+                        timings[count / 2]
+                    };
+
+                    let _ = write!(
+                        usb_serial,
+                        "{PARAM_SET_NAME} over {count} messages: min {min} ms, max {max} ms, median {median} ms, average {average} ms\r\n"
+                    );
+                    let _ = usb_serial.flush_tx();
+
+                    green.set_low();
+                    let hold_until = Instant::now() + Duration::from_millis(500);
+                    while Instant::now() < hold_until {}
+                    green.set_high();
+                }
             }
             b's' => {
-                 blue.set_low();
+                blue.set_low();
 
-                let signing_key = SigningKey::<Sha2_128f>::try_from(SECRET_KEY_BYTES)
+                let signing_key = SigningKey::<SelectedParams>::try_from(SECRET_KEY_BYTES)
                     .expect("embedded secret key must be well-formed");
 
                 match signing_key.try_sign(MESSAGE) {
@@ -115,11 +228,13 @@ fn main() -> ! {
                         let sig_bytes = signature.to_bytes();
                         let _ = write!(
                             usb_serial,
-                            "signed {} bytes with public key {}\r\nsignature ({} bytes): ",
+                            "signed {} bytes with public key ({PARAM_SET_NAME}) ",
                             MESSAGE.len(),
-                            PUBLIC_KEY_HEX.trim(),
-                            sig_bytes.len(),
                         );
+                        for b in PUBLIC_KEY_BYTES.iter() {
+                            let _ = write!(usb_serial, "{b:02x}");
+                        }
+                        let _ = write!(usb_serial, "\r\nsignature ({} bytes): ", sig_bytes.len());
                         for b in sig_bytes.iter().take(8) {
                             let _ = write!(usb_serial, "{b:02x}");
                         }
@@ -156,14 +271,18 @@ fn main() -> ! {
                     continue;
                 };
 
-                let signing_key = SigningKey::<Sha2_128f>::new(&mut trng);
+                let signing_key = SigningKey::<SelectedParams>::new(&mut trng);
                 let sec_bytes = signing_key.to_bytes();
                 let pub_bytes = signing_key.as_ref().to_bytes();
 
                 red.set_high();
                 blue.set_high();
 
-                let _ = write!(usb_serial, "sec.key ({} bytes): ", sec_bytes.len());
+                let _ = write!(
+                    usb_serial,
+                    "generated with {PARAM_SET_NAME}\r\nsec.key ({} bytes): ",
+                    sec_bytes.len()
+                );
                 for b in sec_bytes.iter() {
                     let _ = write!(usb_serial, "{b:02x}");
                 }
@@ -186,9 +305,10 @@ fn main() -> ! {
                 orange.set_high();
             }
             b'?' => {
+                let profile = if cfg!(debug_assertions) { "dev" } else { "release" };
                 let _ = write!(
                     usb_serial,
-                    "red={:?} green={:?} blue={:?} orange={:?}\r\n",
+                    "profile={profile} param={PARAM_SET_NAME} red={:?} green={:?} blue={:?} orange={:?}\r\n",
                     red.output_level(),
                     green.output_level(),
                     blue.output_level(),

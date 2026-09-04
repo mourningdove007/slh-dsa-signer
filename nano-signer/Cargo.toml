@@ -18,6 +18,15 @@ critical-section = "1.2.0"
 slh-dsa = { version = "0.2.0-rc.5", default-features = false }
 
 
+[features]
+default = ["param-192f"]
+param-128s = []
+param-128f = []
+param-192s = []
+param-192f = []
+param-256s = []
+param-256f = []
+
 # For fine tuning these settings, please refer to https://doc.rust-lang.org/cargo/reference/profiles.html
 [profile.dev]
 # The default debug profile is too slow and too big for resource-constrained devices.

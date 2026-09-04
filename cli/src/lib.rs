@@ -4,26 +4,94 @@ use std::path::Path;
 
 use rand_core::OsRng;
 use signature::{Keypair, Signer, Verifier};
-use slh_dsa::{Sha2_128f, Signature, SigningKey, VerifyingKey};
+use slh_dsa::{
+    ParameterSet, Sha2_128f, Sha2_128s, Sha2_192f, Sha2_192s, Sha2_256f, Sha2_256s, Signature,
+    SigningKey, VerifyingKey,
+};
 
-pub type Params = Sha2_128f;
 
-pub fn generate_keypair(secret_key_path: &Path) -> io::Result<Vec<u8>> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ParamSet {
+    Sha2_128s,
+    Sha2_128f,
+    Sha2_192s,
+    Sha2_192f,
+    Sha2_256s,
+    Sha2_256f,
+}
+
+impl ParamSet {
+    
+    pub const DEFAULT: Self = Self::Sha2_128s;
+
+    pub fn parse(name: &str) -> Option<Self> {
+        Some(match name {
+            "128s" => Self::Sha2_128s,
+            "128f" => Self::Sha2_128f,
+            "192s" => Self::Sha2_192s,
+            "192f" => Self::Sha2_192f,
+            "256s" => Self::Sha2_256s,
+            "256f" => Self::Sha2_256f,
+            _ => return None,
+        })
+    }
+}
+
+pub fn generate_keypair(
+    param_set: ParamSet,
+    secret_key_path: &Path,
+    public_key_path: Option<&Path>,
+) -> io::Result<Vec<u8>> {
+    match param_set {
+        ParamSet::Sha2_128s => generate_keypair_for::<Sha2_128s>(secret_key_path, public_key_path),
+        ParamSet::Sha2_128f => generate_keypair_for::<Sha2_128f>(secret_key_path, public_key_path),
+        ParamSet::Sha2_192s => generate_keypair_for::<Sha2_192s>(secret_key_path, public_key_path),
+        ParamSet::Sha2_192f => generate_keypair_for::<Sha2_192f>(secret_key_path, public_key_path),
+        ParamSet::Sha2_256s => generate_keypair_for::<Sha2_256s>(secret_key_path, public_key_path),
+        ParamSet::Sha2_256f => generate_keypair_for::<Sha2_256f>(secret_key_path, public_key_path),
+    }
+}
+
+fn generate_keypair_for<P: ParameterSet>(
+    secret_key_path: &Path,
+    public_key_path: Option<&Path>,
+) -> io::Result<Vec<u8>> {
     let mut rng = OsRng;
-    let signing_key = SigningKey::<Params>::new(&mut rng);
+    let signing_key = SigningKey::<P>::new(&mut rng);
 
     fs::write(secret_key_path, signing_key.to_bytes().as_slice())?;
 
-    Ok(signing_key.verifying_key().to_bytes().to_vec())
+    let public_key = signing_key.verifying_key().to_bytes().to_vec();
+    if let Some(public_key_path) = public_key_path {
+        fs::write(public_key_path, &public_key)?;
+    }
+
+    Ok(public_key)
 }
 
 pub fn sign_message(
+    param_set: ParamSet,
+    message: &[u8],
+    secret_key_path: &Path,
+    signature_path: &Path,
+) -> io::Result<Vec<u8>> {
+    match param_set {
+        ParamSet::Sha2_128s => sign_message_for::<Sha2_128s>(message, secret_key_path, signature_path),
+        ParamSet::Sha2_128f => sign_message_for::<Sha2_128f>(message, secret_key_path, signature_path),
+        ParamSet::Sha2_192s => sign_message_for::<Sha2_192s>(message, secret_key_path, signature_path),
+        ParamSet::Sha2_192f => sign_message_for::<Sha2_192f>(message, secret_key_path, signature_path),
+        ParamSet::Sha2_256s => sign_message_for::<Sha2_256s>(message, secret_key_path, signature_path),
+        ParamSet::Sha2_256f => sign_message_for::<Sha2_256f>(message, secret_key_path, signature_path),
+    }
+}
+
+fn sign_message_for<P: ParameterSet>(
     message: &[u8],
     secret_key_path: &Path,
     signature_path: &Path,
 ) -> io::Result<Vec<u8>> {
     let key_bytes = fs::read(secret_key_path)?;
-    let signing_key = SigningKey::<Params>::try_from(key_bytes.as_slice()).map_err(|_| {
+    let signing_key = SigningKey::<P>::try_from(key_bytes.as_slice()).map_err(|_| {
         io::Error::new(
             io::ErrorKind::InvalidData,
             format!("invalid secret key at {}", secret_key_path.display()),
@@ -41,14 +109,48 @@ pub fn sign_message(
 }
 
 pub fn verify_message(
+    param_set: ParamSet,
     message: &[u8],
     signature_path: &Path,
-    public_key: &[u8],
+    public_key_path: &Path,
 ) -> io::Result<bool> {
+    match param_set {
+        ParamSet::Sha2_128s => {
+            verify_message_for::<Sha2_128s>(message, signature_path, public_key_path)
+        }
+        ParamSet::Sha2_128f => {
+            verify_message_for::<Sha2_128f>(message, signature_path, public_key_path)
+        }
+        ParamSet::Sha2_192s => {
+            verify_message_for::<Sha2_192s>(message, signature_path, public_key_path)
+        }
+        ParamSet::Sha2_192f => {
+            verify_message_for::<Sha2_192f>(message, signature_path, public_key_path)
+        }
+        ParamSet::Sha2_256s => {
+            verify_message_for::<Sha2_256s>(message, signature_path, public_key_path)
+        }
+        ParamSet::Sha2_256f => {
+            verify_message_for::<Sha2_256f>(message, signature_path, public_key_path)
+        }
+    }
+}
+
+fn verify_message_for<P: ParameterSet>(
+    message: &[u8],
+    signature_path: &Path,
+    public_key_path: &Path,
+) -> io::Result<bool> {
+    let public_key_bytes = fs::read(public_key_path)?;
+    let verifying_key = VerifyingKey::<P>::try_from(public_key_bytes.as_slice()).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid public key at {}", public_key_path.display()),
+        )
+    })?;
+
     let signature_bytes = fs::read(signature_path)?;
-    let verifying_key = VerifyingKey::<Params>::try_from(public_key)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid public key"))?;
-    let signature = Signature::<Params>::try_from(signature_bytes.as_slice()).map_err(|_| {
+    let signature = Signature::<P>::try_from(signature_bytes.as_slice()).map_err(|_| {
         io::Error::new(
             io::ErrorKind::InvalidData,
             format!("invalid signature at {}", signature_path.display()),
@@ -56,6 +158,81 @@ pub fn verify_message(
     })?;
 
     Ok(verifying_key.verify(message, &signature).is_ok())
+}
+
+const CORPUS_SEED: u64 = 20260902;
+const CORPUS_MIN_LEN: u32 = 10;
+const CORPUS_MAX_LEN: u32 = 65536;
+const CORPUS_LENGTH_COUNT: usize = 50;
+const CORPUS_COPIES_PER_LENGTH: usize = 2;
+
+/// Never use this for key material; it is only for generating test data.
+struct SplitMix64 {
+    state: u64,
+}
+
+impl SplitMix64 {
+    fn new(seed: u64) -> Self {
+        Self { state: seed }
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        self.state = self.state.wrapping_add(0x9E3779B97F4A7C15);
+        let mut z = self.state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    fn fill_bytes(&mut self, buf: &mut [u8]) {
+        let mut chunks = buf.chunks_exact_mut(8);
+        for chunk in &mut chunks {
+            chunk.copy_from_slice(&self.next_u64().to_le_bytes());
+        }
+        let remainder = chunks.into_remainder();
+        if !remainder.is_empty() {
+            let tail = self.next_u64().to_le_bytes();
+            remainder.copy_from_slice(&tail[..remainder.len()]);
+        }
+    }
+}
+
+fn corpus_lengths() -> [u32; CORPUS_LENGTH_COUNT] {
+    let mut lengths = [0u32; CORPUS_LENGTH_COUNT];
+    for (i, len) in lengths.iter_mut().enumerate() {
+        let t = i as f64 / (CORPUS_LENGTH_COUNT - 1) as f64;
+        let value =
+            CORPUS_MIN_LEN as f64 * (CORPUS_MAX_LEN as f64 / CORPUS_MIN_LEN as f64).powf(t);
+        *len = value.round() as u32;
+    }
+    lengths[0] = CORPUS_MIN_LEN;
+    let last = lengths.len() - 1;
+    lengths[last] = CORPUS_MAX_LEN;
+    for i in 1..lengths.len() {
+        if lengths[i] <= lengths[i - 1] {
+            lengths[i] = lengths[i - 1] + 1;
+        }
+    }
+    lengths
+}
+
+pub fn generate_corpus(output_path: &Path) -> io::Result<(usize, usize)> {
+    let mut rng = SplitMix64::new(CORPUS_SEED);
+    let mut out = Vec::new();
+    let mut record_count = 0;
+
+    for &length in &corpus_lengths() {
+        for _ in 0..CORPUS_COPIES_PER_LENGTH {
+            let mut message = vec![0u8; length as usize];
+            rng.fill_bytes(&mut message);
+            out.extend_from_slice(&length.to_le_bytes());
+            out.extend_from_slice(&message);
+            record_count += 1;
+        }
+    }
+
+    fs::write(output_path, &out)?;
+    Ok((record_count, out.len()))
 }
 
 #[cfg(test)]
