@@ -13,8 +13,10 @@ use esp_hal::clock::CpuClock;
 use esp_hal::gpio::{Level, Output, OutputConfig};
 use esp_hal::main;
 use esp_hal::rng::{Trng, TrngSource};
+use esp_hal::sha::Sha;
 use esp_hal::time::{Duration, Instant};
 use esp_hal::usb_serial_jtag::UsbSerialJtag;
+use sha2::{Digest, Sha256 as SwSha256};
 use slh_dsa::signature::Signer;
 use slh_dsa::SigningKey;
 
@@ -61,6 +63,15 @@ const PARAM_SET_NAME: &str = "256s";
 const PARAM_SET_NAME: &str = "256f";
 
 const CORPUS_MESSAGE_COUNT: usize = 100;
+
+const HASH_BENCH_COUNT: usize = 1000;
+const HASH_BENCH_MIN_LEN: usize = 100;
+const HASH_BENCH_MAX_LEN: usize = 200;
+static HASH_BENCH_DATA: [u8; HASH_BENCH_MAX_LEN] = [0xA5; HASH_BENCH_MAX_LEN];
+
+fn hash_bench_len(i: usize) -> usize {
+    HASH_BENCH_MIN_LEN + (i % (HASH_BENCH_MAX_LEN - HASH_BENCH_MIN_LEN + 1))
+}
 
 static SECRET_KEY_BYTES: &[u8] = include_bytes!("../../keys/sec.key");
 static PUBLIC_KEY_BYTES: &[u8] = include_bytes!("../../keys/pub.key");
@@ -133,6 +144,8 @@ fn main() -> ! {
     // for as long as `Trng::try_new()` is called, hence bound here rather
     // than inside the match arm that uses it.
     let _trng_source = TrngSource::new(peripherals.RNG, peripherals.ADC1);
+
+    slh_dsa::init_hw_sha(Sha::new(peripherals.SHA));
 
     loop {
         // read_byte() is non-blocking (returns Err(WouldBlock) when nothing is
@@ -235,10 +248,10 @@ fn main() -> ! {
                             let _ = write!(usb_serial, "{b:02x}");
                         }
                         let _ = write!(usb_serial, "\r\nsignature ({} bytes): ", sig_bytes.len());
-                        for b in sig_bytes.iter().take(8) {
+                        for b in sig_bytes.iter() {
                             let _ = write!(usb_serial, "{b:02x}");
                         }
-                        let _ = write!(usb_serial, "...\r\n");
+                        let _ = write!(usb_serial, "\r\n");
                         let _ = usb_serial.flush_tx();
 
                         green.set_low();
@@ -291,6 +304,100 @@ fn main() -> ! {
                     let _ = write!(usb_serial, "{b:02x}");
                 }
                 let _ = write!(usb_serial, "\r\nnot written to storage yet\r\n");
+                let _ = usb_serial.flush_tx();
+
+                green.set_low();
+                let hold_until = Instant::now() + Duration::from_millis(500);
+                while Instant::now() < hold_until {}
+                green.set_high();
+            }
+            b'1' => {
+                blue.set_low();
+
+                let _ = write!(
+                    usb_serial,
+                    "software SHA-256 over {HASH_BENCH_COUNT} hashes, {HASH_BENCH_MIN_LEN}-{HASH_BENCH_MAX_LEN} bytes\r\n"
+                );
+                let _ = usb_serial.flush_tx();
+
+                let mut timings_us = [0u64; HASH_BENCH_COUNT];
+                let mut total_bytes: u64 = 0;
+                let wall_start = Instant::now();
+
+                for (i, timing) in timings_us.iter_mut().enumerate() {
+                    let len = hash_bench_len(i);
+                    let data = &HASH_BENCH_DATA[..len];
+
+                    let start = Instant::now();
+                    let mut hasher = SwSha256::new();
+                    hasher.update(data);
+                    let _output = hasher.finalize();
+                    *timing = start.elapsed().as_micros();
+                    total_bytes += len as u64;
+                }
+
+                let wall_elapsed_us = wall_start.elapsed().as_micros();
+                blue.set_high();
+
+                timings_us.sort_unstable();
+                let min = timings_us[0];
+                let max = timings_us[HASH_BENCH_COUNT - 1];
+                let sum: u64 = timings_us.iter().sum();
+                let average = sum / HASH_BENCH_COUNT as u64;
+                let median = (timings_us[HASH_BENCH_COUNT / 2 - 1] + timings_us[HASH_BENCH_COUNT / 2]) / 2;
+                let throughput = total_bytes * 1_000_000 / wall_elapsed_us.max(1);
+
+                let _ = write!(
+                    usb_serial,
+                    "software SHA-256: min {min} us, max {max} us, median {median} us, average {average} us\r\n\
+                     {total_bytes} bytes in {wall_elapsed_us} us wall clock ({throughput} bytes/sec)\r\n"
+                );
+                let _ = usb_serial.flush_tx();
+
+                green.set_low();
+                let hold_until = Instant::now() + Duration::from_millis(500);
+                while Instant::now() < hold_until {}
+                green.set_high();
+            }
+            b'2' => {
+                blue.set_low();
+
+                let _ = write!(
+                    usb_serial,
+                    "hardware SHA-256 over {HASH_BENCH_COUNT} hashes, {HASH_BENCH_MIN_LEN}-{HASH_BENCH_MAX_LEN} bytes\r\n"
+                );
+                let _ = usb_serial.flush_tx();
+
+                let mut timings_us = [0u64; HASH_BENCH_COUNT];
+                let mut total_bytes: u64 = 0;
+                let wall_start = Instant::now();
+
+                for (i, timing) in timings_us.iter_mut().enumerate() {
+                    let len = hash_bench_len(i);
+                    let data = &HASH_BENCH_DATA[..len];
+
+                    let start = Instant::now();
+                    let _output = slh_dsa::hw_sha256(data);
+                    *timing = start.elapsed().as_micros();
+                    total_bytes += len as u64;
+                }
+
+                let wall_elapsed_us = wall_start.elapsed().as_micros();
+                blue.set_high();
+
+                timings_us.sort_unstable();
+                let min = timings_us[0];
+                let max = timings_us[HASH_BENCH_COUNT - 1];
+                let sum: u64 = timings_us.iter().sum();
+                let average = sum / HASH_BENCH_COUNT as u64;
+                let median = (timings_us[HASH_BENCH_COUNT / 2 - 1] + timings_us[HASH_BENCH_COUNT / 2]) / 2;
+                let throughput = total_bytes * 1_000_000 / wall_elapsed_us.max(1);
+
+                let _ = write!(
+                    usb_serial,
+                    "hardware SHA-256: min {min} us, max {max} us, median {median} us, average {average} us\r\n\
+                     {total_bytes} bytes in {wall_elapsed_us} us wall clock ({throughput} bytes/sec)\r\n"
+                );
                 let _ = usb_serial.flush_tx();
 
                 green.set_low();
