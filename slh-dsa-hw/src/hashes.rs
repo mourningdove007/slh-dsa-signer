@@ -1,9 +1,3 @@
-//! Hash functions used in the SLH-DSA signature scheme
-//!
-//! Each parameter set defines several functions derived from the core hash function (SHA2 or SHAKE)
-//! A `HashSuite` contains all of these functions, defined in FIPS-205 section 10
-//!
-//! Modified from upstream; see `../README.md`.
 #[cfg(feature = "hw-sha")]
 mod hw;
 mod sha2;
@@ -14,28 +8,24 @@ use core::fmt::Debug;
 use hybrid_array::{Array, ArraySize};
 
 #[cfg(feature = "hw-sha")]
-pub use hw::{hw_sha256, init_hw_sha};
+pub use hw::{hw_hmac512, hw_sha256, hw_sha512, init_hw_sha};
 pub use sha2::*;
 pub use shake::*;
 
 use crate::{PkSeed, SkPrf, SkSeed, address::Address};
 
-/// A trait specifying the hash functions described in FIPS-205 section 10
 pub(crate) trait HashSuite: Sized + Clone + Debug {
     type N: ArraySize + Debug + Clone + PartialEq + Eq;
     type M: ArraySize + Debug + Clone + PartialEq + Eq;
 
-    /// Instantiates the hash suite.
     fn new_from_pk_seed(pk_seed: &PkSeed<Self::N>) -> Self;
 
-    /// Pseudorandom function that generates the randomizer for the randomized hashing of the message to be signed.
     fn prf_msg(
         sk_prf: &SkPrf<Self::N>,
         opt_rand: &Array<u8, Self::N>,
         msg: &[&[impl AsRef<[u8]>]],
     ) -> Array<u8, Self::N>;
 
-    /// Hashes a message using a given randomizer
     fn h_msg(
         rand: &Array<u8, Self::N>,
         pk_seed: &PkSeed<Self::N>,
@@ -43,19 +33,14 @@ pub(crate) trait HashSuite: Sized + Clone + Debug {
         msg: &[&[impl AsRef<[u8]>]],
     ) -> Array<u8, Self::M>;
 
-    /// PRF that is used to generate the secret values in WOTS+ and FORS private keys.
     fn prf_sk(&self, sk_seed: &SkSeed<Self::N>, adrs: &impl Address) -> Array<u8, Self::N>;
 
-    /// A hash function that maps an L*N-byte string to an N-byte string. Used for the chain function in WOTS+.
-    /// Message length must be a multiple of `N`. Panics otherwise.
     fn t<L: ArraySize>(
         &self,
         adrs: &impl Address,
         m: &Array<Array<u8, Self::N>, L>,
     ) -> Array<u8, Self::N>;
 
-    /// Specialization of `t` for 2*chunk messages. Used to compute Merkle tree nodes.
-    /// May be reimplemented for better performance.
     fn h(
         &self,
         adrs: &impl Address,
@@ -63,8 +48,6 @@ pub(crate) trait HashSuite: Sized + Clone + Debug {
         m2: &Array<u8, Self::N>,
     ) -> Array<u8, Self::N>;
 
-    /// Hash function that takes an N-byte input to an N-byte output
-    /// Used for the WOTS+ chain function
     fn f(&self, adrs: &impl Address, m: &Array<u8, Self::N>) -> Array<u8, Self::N>;
 }
 
@@ -103,7 +86,6 @@ mod tests {
         prf_msg::<Sha2_128f>(&hex!("6a4b5cf23911d4f3a6591d7003445316"));
     }
 
-    // Exercises the mgf1_sha256 function
     #[test]
     fn h_msg_sha2_128_f() {
         h_msg::<Sha2_128f>(&hex!(
@@ -111,7 +93,6 @@ mod tests {
         ));
     }
 
-    // Exercises the mgf1_sha512 function
     #[test]
     fn h_msg_sha2_256_f() {
         h_msg::<Sha2_256f>(&hex!(
