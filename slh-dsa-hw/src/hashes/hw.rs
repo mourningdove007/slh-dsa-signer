@@ -1,3 +1,5 @@
+#![allow(missing_docs)]
+
 use esp_hal::sha::{Sha, Sha256 as HwSha256, Sha512 as HwSha512, ShaDigest};
 
 static HW_SHA: critical_section::Mutex<core::cell::RefCell<Option<Sha<'static>>>> =

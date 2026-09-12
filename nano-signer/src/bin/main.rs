@@ -81,6 +81,8 @@ fn run_hash_bench(
     label: &str,
     mut op: impl FnMut(&[u8]),
 ) {
+    op(&HASH_BENCH_DATA[..hash_bench_len(0)]);
+
     let mut timings_us = [0u64; HASH_BENCH_COUNT];
     let mut total_bytes: u64 = 0;
     let wall_start = Instant::now();
