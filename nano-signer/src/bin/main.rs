@@ -16,7 +16,9 @@ use esp_hal::rng::{Trng, TrngSource};
 use esp_hal::sha::Sha;
 use esp_hal::time::{Duration, Instant};
 use esp_hal::usb_serial_jtag::UsbSerialJtag;
-use sha2::{Digest, Sha256 as SwSha256};
+use esp_hal::Blocking;
+use hmac::{Hmac, KeyInit, Mac};
+use sha2::{Digest, Sha256 as SwSha256, Sha512 as SwSha512};
 use slh_dsa::signature::Signer;
 use slh_dsa::SigningKey;
 
@@ -68,9 +70,47 @@ const HASH_BENCH_COUNT: usize = 1000;
 const HASH_BENCH_MIN_LEN: usize = 100;
 const HASH_BENCH_MAX_LEN: usize = 200;
 static HASH_BENCH_DATA: [u8; HASH_BENCH_MAX_LEN] = [0xA5; HASH_BENCH_MAX_LEN];
+const HMAC_BENCH_KEY: [u8; 24] = [0x5A; 24];
 
 fn hash_bench_len(i: usize) -> usize {
     HASH_BENCH_MIN_LEN + (i % (HASH_BENCH_MAX_LEN - HASH_BENCH_MIN_LEN + 1))
+}
+
+fn run_hash_bench(
+    usb_serial: &mut UsbSerialJtag<'static, Blocking>,
+    label: &str,
+    mut op: impl FnMut(&[u8]),
+) {
+    let mut timings_us = [0u64; HASH_BENCH_COUNT];
+    let mut total_bytes: u64 = 0;
+    let wall_start = Instant::now();
+
+    for (i, timing) in timings_us.iter_mut().enumerate() {
+        let len = hash_bench_len(i);
+        let data = &HASH_BENCH_DATA[..len];
+
+        let start = Instant::now();
+        op(data);
+        *timing = start.elapsed().as_micros();
+        total_bytes += len as u64;
+    }
+
+    let wall_elapsed_us = wall_start.elapsed().as_micros();
+
+    timings_us.sort_unstable();
+    let min = timings_us[0];
+    let max = timings_us[HASH_BENCH_COUNT - 1];
+    let sum: u64 = timings_us.iter().sum();
+    let average = sum / HASH_BENCH_COUNT as u64;
+    let median = (timings_us[HASH_BENCH_COUNT / 2 - 1] + timings_us[HASH_BENCH_COUNT / 2]) / 2;
+    let throughput = total_bytes * 1_000_000 / wall_elapsed_us.max(1);
+
+    let _ = write!(
+        usb_serial,
+        "{label}: min {min} us, max {max} us, median {median} us, average {average} us\r\n\
+         {total_bytes} bytes in {wall_elapsed_us} us wall clock ({throughput} bytes/sec)\r\n"
+    );
+    let _ = usb_serial.flush_tx();
 }
 
 static SECRET_KEY_BYTES: &[u8] = include_bytes!("../../keys/sec.key");
@@ -100,8 +140,6 @@ impl<'a> Iterator for CorpusMessages<'a> {
     }
 }
 
-// This creates a default app-descriptor required by the esp-idf bootloader.
-// For more information see: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/app_image_format.html#application-description>
 esp_bootloader_esp_idf::esp_app_desc!();
 
 #[allow(
@@ -110,19 +148,9 @@ esp_bootloader_esp_idf::esp_app_desc!();
 )]
 #[main]
 fn main() -> ! {
-    // generator version: 1.3.0
-    // generator parameters: --chip esp32s3 -o esp32s3-wroom-1
-
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
 
-    // The following pins are used to bootstrap the chip. They are available
-    // for use, but check the datasheet of the module for more information on them.
-    // - GPIO0
-    // - GPIO3
-    // - GPIO45
-    // - GPIO46
-    // These GPIO pins are in use by some feature of the module and should not be used.
     let _ = peripherals.GPIO27;
     let _ = peripherals.GPIO28;
     let _ = peripherals.GPIO29;
@@ -130,26 +158,18 @@ fn main() -> ! {
     let _ = peripherals.GPIO31;
     let _ = peripherals.GPIO32;
 
-    // RGB LED is active-LOW (Level::High == off). Verify these GPIO numbers
-    // against the official Nano ESP32 pinout before trusting them.
     let mut red = Output::new(peripherals.GPIO46, Level::High, OutputConfig::default());
     let mut green = Output::new(peripherals.GPIO0, Level::High, OutputConfig::default());
     let mut blue = Output::new(peripherals.GPIO45, Level::High, OutputConfig::default());
-    // Polarity of the D13 user LED is not yet confirmed; use `?` to check it empirically.
     let mut orange = Output::new(peripherals.GPIO48, Level::High, OutputConfig::default());
 
     let mut usb_serial = UsbSerialJtag::new(peripherals.USB_DEVICE);
 
-    // Backs the hardware TRNG used for key generation below. Must stay alive
-    // for as long as `Trng::try_new()` is called, hence bound here rather
-    // than inside the match arm that uses it.
     let _trng_source = TrngSource::new(peripherals.RNG, peripherals.ADC1);
 
     slh_dsa::init_hw_sha(Sha::new(peripherals.SHA));
 
     loop {
-        // read_byte() is non-blocking (returns Err(WouldBlock) when nothing is
-        // waiting), so we just spin until a byte shows up.
         let Ok(byte) = usb_serial.read_byte() else {
             continue;
         };
@@ -272,7 +292,6 @@ fn main() -> ! {
                 }
             }
             b'k' => {
-                // Key generation
                 red.set_low();
                 blue.set_low();
 
@@ -316,44 +335,20 @@ fn main() -> ! {
 
                 let _ = write!(
                     usb_serial,
-                    "software SHA-256 over {HASH_BENCH_COUNT} hashes, {HASH_BENCH_MIN_LEN}-{HASH_BENCH_MAX_LEN} bytes\r\n"
+                    "SHA-256 over {HASH_BENCH_COUNT} hashes, {HASH_BENCH_MIN_LEN}-{HASH_BENCH_MAX_LEN} bytes\r\n"
                 );
                 let _ = usb_serial.flush_tx();
 
-                let mut timings_us = [0u64; HASH_BENCH_COUNT];
-                let mut total_bytes: u64 = 0;
-                let wall_start = Instant::now();
-
-                for (i, timing) in timings_us.iter_mut().enumerate() {
-                    let len = hash_bench_len(i);
-                    let data = &HASH_BENCH_DATA[..len];
-
-                    let start = Instant::now();
+                run_hash_bench(&mut usb_serial, "software SHA-256", |data| {
                     let mut hasher = SwSha256::new();
                     hasher.update(data);
                     let _output = hasher.finalize();
-                    *timing = start.elapsed().as_micros();
-                    total_bytes += len as u64;
-                }
+                });
+                run_hash_bench(&mut usb_serial, "hardware SHA-256", |data| {
+                    let _output = slh_dsa::hw_sha256(data);
+                });
 
-                let wall_elapsed_us = wall_start.elapsed().as_micros();
                 blue.set_high();
-
-                timings_us.sort_unstable();
-                let min = timings_us[0];
-                let max = timings_us[HASH_BENCH_COUNT - 1];
-                let sum: u64 = timings_us.iter().sum();
-                let average = sum / HASH_BENCH_COUNT as u64;
-                let median = (timings_us[HASH_BENCH_COUNT / 2 - 1] + timings_us[HASH_BENCH_COUNT / 2]) / 2;
-                let throughput = total_bytes * 1_000_000 / wall_elapsed_us.max(1);
-
-                let _ = write!(
-                    usb_serial,
-                    "software SHA-256: min {min} us, max {max} us, median {median} us, average {average} us\r\n\
-                     {total_bytes} bytes in {wall_elapsed_us} us wall clock ({throughput} bytes/sec)\r\n"
-                );
-                let _ = usb_serial.flush_tx();
-
                 green.set_low();
                 let hold_until = Instant::now() + Duration::from_millis(500);
                 while Instant::now() < hold_until {}
@@ -364,42 +359,44 @@ fn main() -> ! {
 
                 let _ = write!(
                     usb_serial,
-                    "hardware SHA-256 over {HASH_BENCH_COUNT} hashes, {HASH_BENCH_MIN_LEN}-{HASH_BENCH_MAX_LEN} bytes\r\n"
+                    "SHA-512 over {HASH_BENCH_COUNT} hashes, {HASH_BENCH_MIN_LEN}-{HASH_BENCH_MAX_LEN} bytes\r\n"
                 );
                 let _ = usb_serial.flush_tx();
 
-                let mut timings_us = [0u64; HASH_BENCH_COUNT];
-                let mut total_bytes: u64 = 0;
-                let wall_start = Instant::now();
+                run_hash_bench(&mut usb_serial, "software SHA-512", |data| {
+                    let mut hasher = SwSha512::new();
+                    hasher.update(data);
+                    let _output = hasher.finalize();
+                });
+                run_hash_bench(&mut usb_serial, "hardware SHA-512", |data| {
+                    let _output = slh_dsa::hw_sha512(data);
+                });
 
-                for (i, timing) in timings_us.iter_mut().enumerate() {
-                    let len = hash_bench_len(i);
-                    let data = &HASH_BENCH_DATA[..len];
-
-                    let start = Instant::now();
-                    let _output = slh_dsa::hw_sha256(data);
-                    *timing = start.elapsed().as_micros();
-                    total_bytes += len as u64;
-                }
-
-                let wall_elapsed_us = wall_start.elapsed().as_micros();
                 blue.set_high();
-
-                timings_us.sort_unstable();
-                let min = timings_us[0];
-                let max = timings_us[HASH_BENCH_COUNT - 1];
-                let sum: u64 = timings_us.iter().sum();
-                let average = sum / HASH_BENCH_COUNT as u64;
-                let median = (timings_us[HASH_BENCH_COUNT / 2 - 1] + timings_us[HASH_BENCH_COUNT / 2]) / 2;
-                let throughput = total_bytes * 1_000_000 / wall_elapsed_us.max(1);
+                green.set_low();
+                let hold_until = Instant::now() + Duration::from_millis(500);
+                while Instant::now() < hold_until {}
+                green.set_high();
+            }
+            b'3' => {
+                blue.set_low();
 
                 let _ = write!(
                     usb_serial,
-                    "hardware SHA-256: min {min} us, max {max} us, median {median} us, average {average} us\r\n\
-                     {total_bytes} bytes in {wall_elapsed_us} us wall clock ({throughput} bytes/sec)\r\n"
+                    "HMAC-SHA-512 over {HASH_BENCH_COUNT} hashes, {HASH_BENCH_MIN_LEN}-{HASH_BENCH_MAX_LEN} bytes\r\n"
                 );
                 let _ = usb_serial.flush_tx();
 
+                run_hash_bench(&mut usb_serial, "software HMAC-SHA-512", |data| {
+                    let mut mac = Hmac::<SwSha512>::new_from_slice(&HMAC_BENCH_KEY).unwrap();
+                    mac.update(data);
+                    let _output = mac.finalize();
+                });
+                run_hash_bench(&mut usb_serial, "hardware HMAC-SHA-512", |data| {
+                    let _output = slh_dsa::hw_hmac512(&HMAC_BENCH_KEY, data);
+                });
+
+                blue.set_high();
                 green.set_low();
                 let hold_until = Instant::now() + Duration::from_millis(500);
                 while Instant::now() < hold_until {}
@@ -426,6 +423,4 @@ fn main() -> ! {
             _ => {}
         }
     }
-
-    // for inspiration have a look at the examples at https://github.com/esp-rs/esp-hal/tree/esp-hal-v1.1.0/examples
 }

@@ -970,6 +970,7 @@ dependencies = [
  "critical-section",
  "esp-bootloader-esp-idf",
  "esp-hal",
+ "hmac",
  "sha2",
  "slh-dsa",
 ]
