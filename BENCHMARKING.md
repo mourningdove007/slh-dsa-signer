@@ -24,7 +24,7 @@ Deterministic (SplitMix64, seed `20260902`); see "Message corpus" below for the 
   192f over 100 messages: min <N> ms, max <N> ms, median <N> ms, average <N> ms
   ```
 
-- **`1`** / **`2`** / **`3`**: each runs 1000 hashes (cycling 100-200 byte inputs) through one algorithm's software and hardware implementation back to back, printing both for direct comparison: `1` is SHA-256, `2` is SHA-512, `3` is HMAC-SHA-512 (a hand-rolled construction around the hardware SHA-512 primitive, since esp-hal has no hardware HMAC wrapper; see `NANO_DOCUMENTATION.md`). All three share the same SHA peripheral that signing itself uses, so results reflect real contention with whatever else touches it, not an isolated best case.
+- **`1`** / **`2`** / **`3`**: each runs one untimed warm-up hash first (discards a one-time cold-start cost; see "Raw hashing" below), then 1000 timed hashes (cycling 100-200 byte inputs) through one algorithm's software and hardware implementation back to back, printing both for direct comparison: `1` is SHA-256, `2` is SHA-512, `3` is HMAC-SHA-512 (a hand-rolled construction around the hardware SHA-512 primitive, since esp-hal has no hardware HMAC wrapper; see `NANO_DOCUMENTATION.md`). All three share the same SHA peripheral that signing itself uses, so results reflect real contention with whatever else touches it, not an isolated best case.
 
 ## Results
 
@@ -32,7 +32,7 @@ See `README.md` for the results table. The software rows predate the hardware ba
 
 ## Raw hashing: hardware vs software
 
-Results from the `'1'`/`'2'`/`'3'` commands described above; see `README.md` for the table. Hardware throughput is consistent across all three (5-13 million bytes/sec). Software throughput is not: SHA-256 in software (~2.1 million bytes/sec) is orders of magnitude faster than SHA-512 or HMAC-SHA-512 in software (~5,000-13,000 bytes/sec). The min/max spread within each SHA-512/HMAC-SHA-512 software row is not noise: it's a roughly fixed ~6,000 us cost per 128-byte block, and this input range straddles a 1-block/2-block boundary for SHA-512, so most samples land near the 2-block cost and a minority near the 1-block cost.
+Results from the `'1'`/`'2'`/`'3'` commands described above; see `README.md` for the table. The first sample of every run, regardless of backend, used to cost far more than steady state (a one-time cold-start effect, not a per-call cost); excluding it via a warm-up call cut every hardware row's max by roughly 6x and software SHA-256's max by roughly 18x. Hardware throughput is now consistent across all three algorithms (~12-13 million bytes/sec each): the hardware accelerator doesn't pay software's 64-bit-emulation penalty, so SHA-256 and SHA-512 cost about the same in hardware. Software throughput is not consistent: SHA-256 in software (~2.1 million bytes/sec) is roughly 170x faster than SHA-512 or HMAC-SHA-512 in software (~5,000-13,000 bytes/sec), and that gap's root cause is still under investigation (see `SHA512.md`). The min/max spread within each SHA-512/HMAC-SHA-512 software row wasn't affected by the warm-up fix, since it's a separate, structural cost: a roughly fixed ~6,000 us cost per 128-byte block, and this input range straddles a 1-block/2-block boundary for SHA-512, so most samples land near the 2-block cost and a minority near the 1-block cost.
 
 ## Message corpus
 

@@ -39,14 +39,14 @@ An Arduino Nano ESP32 that reads `message.txt` from a microSD card, signs it wit
 
 | Algorithm | Backend | Unit | Min | Max | Median | Average | Throughput (bytes/sec) |
 |---|---|---|---|---|---|---|---|
-| SHA-256 | software | us | 48 | 1599 | 71 | 71 | 2,064,227 |
-| SHA-256 | hardware | us | 8 | 65 | 10 | 10 | 13,244,619 |
-| <span style="color:red">SHA-512</span> | <span style="color:red">software</span> | <span style="color:red">us</span> | <span style="color:red">6056</span> | <span style="color:red">12044</span> | <span style="color:red">12040</span> | <span style="color:red">11324</span> | <span style="color:red">13,149</span> |
-| SHA-512 | hardware | us | 9 | 220 | 12 | 11 | 11,758,531 |
-| <span style="color:red">HMAC-SHA-512</span> | <span style="color:red">software</span> | <span style="color:red">us</span> | <span style="color:red">24073</span> | <span style="color:red">30082</span> | <span style="color:red">30081</span> | <span style="color:red">29361</span> | <span style="color:red">5,084</span> |
-| HMAC-SHA-512 | hardware | us | 27 | 294 | 30 | 29 | 4,854,411 |
+| SHA-256 | software | us | 47 | 94 | 70 | 69 | 2,130,118 |
+| SHA-256 | hardware | us | 8 | 35 | 10 | 10 | 13,251,661 |
+| <span style="color:red">SHA-512</span> | <span style="color:red">software</span> | <span style="color:red">us</span> | <span style="color:red">6061</span> | <span style="color:red">12036</span> | <span style="color:red">12035</span> | <span style="color:red">11317</span> | <span style="color:red">13,151</span> |
+| SHA-512 | hardware | us | 9 | 35 | 12 | 11 | 11,889,410 |
+| <span style="color:red">HMAC-SHA-512</span> | <span style="color:red">software</span> | <span style="color:red">us</span> | <span style="color:red">23998</span> | <span style="color:red">29962</span> | <span style="color:red">29957</span> | <span style="color:red">29242</span> | <span style="color:red">5,105</span> |
+| HMAC-SHA-512 | hardware | us | 26 | 50 | 29 | 29 | 4,983,836 |
 
-See `BENCHMARKING.md` for what these measure and how they were produced. <span style="color:red">We plan to investigate why the software SHA-512 was taking so long to run on the Nano device.</span>
+See `BENCHMARKING.md` for what these measure and how they were produced. <span style="color:red">We plan to investigate why the software SHA-512 takes so long on the Nano device.</span>
 
 ---
 
